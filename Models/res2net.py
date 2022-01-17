@@ -218,13 +218,13 @@ def res2net101_v1b(pretrained=True, **kwargs):
     """
     model = Res2Net(Bottle2neck, [3, 4, 23, 3], baseWidth = 26, scale = 4, **kwargs)
 
-    if True:
+    if pretrained:
         print("loading res2net cls pretrained model")
-        pretrained = torch.load(open("res2net101_v1b_26w_4s-0812c246.pth", "rb"))
+        #pretrained = torch.load(open("res2net101_v1b_26w_4s-0812c246.pth", "rb"))
         print("loaded res2net pretrained model")
     return model
 
-def res2net50_v1b_26w_4s(pretrained=False, **kwargs):
+def res2net50_v1b_26w_4s(pretrained=True, **kwargs):
     """Constructs a Res2Net-50_v1b_26w_4s model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet

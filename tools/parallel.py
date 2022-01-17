@@ -9,9 +9,7 @@
 ##+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Encoding Data Parallel"""
-import threading
-import functools
-import torch
+import threading, functools, torch
 from torch.autograd import Variable, Function
 import torch.cuda.comm as comm
 from torch.nn.parallel.data_parallel import DataParallel
@@ -125,11 +123,15 @@ class DataParallelCriterion(DataParallel):
         # scattering the targets instead
         if not self.device_ids:
             return self.module(inputs, *targets, **kwargs)
+
         targets, kwargs = self.scatter(targets, kwargs, self.device_ids)
+
         if len(self.device_ids) == 1:
             return self.module(inputs, *targets[0], **kwargs[0])
+
         replicas = self.replicate(self.module, self.device_ids[:len(inputs)])
         outputs = _criterion_parallel_apply(replicas, inputs, targets, kwargs)
+
         return Reduce.apply(*outputs) / len(outputs)
 
 

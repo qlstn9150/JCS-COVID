@@ -9,7 +9,6 @@ class IoUEval:
         self.nthresh = nthresh
         self.thresh = torch.linspace(1./(nthresh + 1), 1. - 1./(nthresh + 1), nthresh).cuda()
         self.EPSILON = np.finfo(np.float).eps
-
         self.gt_sum = torch.zeros((nthresh,)).cuda()
         self.pred_sum = torch.zeros((nthresh,)).cuda()
         self.num_images = 0
@@ -18,7 +17,7 @@ class IoUEval:
         self.recall = torch.zeros(self.nthresh).cuda()
         self.iou = 0.
 
-
+    #각 이미지별로 iou, mae 계산
     def add_batch(self, predict, gth):
         for i in range(predict.shape[0]):
             dt = predict[i]; gt = gth[i]
@@ -31,7 +30,7 @@ class IoUEval:
             
         self.num_images += predict.shape[0]
         
-
+    #평균 iou, mae 리턴
     def get_metric(self):
         x = self.iou / self.num_images
         y = self.mae / self.num_images

@@ -1,21 +1,18 @@
-import os, shutil
-import torch
-import pickle
-from Models import single_model as net
+import os, time, torch, shutil
 import numpy as np
-import Transforms as myTransforms
-from Dataset import Dataset
-from parallel import DataParallelModel, DataParallelCriterion
-import time
 from argparse import ArgumentParser
-from IoUEval import IoUEval
-from torch.autograd import Variable
-import torch.backends.cudnn as cudnn
-import torch.optim.lr_scheduler
+
 from torch.nn.parallel import gather
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.backends.cudnn as cudnn
+import torch.optim.lr_scheduler
 
+from Models import single_model as net
+from tools.IoUEval import IoUEval
+from tools.Dataset import Dataset
+from tools.parallel import DataParallelModel, DataParallelCriterion
+import tools.Transforms as myTransforms
 
 
 def BCEDiceLoss(inputs, targets):
@@ -39,11 +36,11 @@ class CrossEntropyLoss(nn.Module):
             loss4 = BCEDiceLoss(inputs[:, 3, :, :], target)
             loss5 = BCEDiceLoss(inputs[:, 4, :, :], target)
             return loss1 + loss2 + loss3 + loss4 + loss5
+
         elif inputs.shape[1] == 1:
             #print(inputs.shape)
             loss = BCEDiceLoss(inputs[:, 0, :, :], target)
             return loss
-
 
 class FLoss(nn.Module):
     def __init__(self, beta=0.3, log_like=False):
@@ -71,11 +68,9 @@ class FLoss(nn.Module):
         loss5 = self._compute_loss(inputs[:, 4, :, :], target)
         return 1.0*loss1 + 1.0*loss2 + 1.0*loss3 + 1.0*loss4 + 1.0*loss5
 
-
-
 @torch.no_grad()
 def val(args, val_loader, model, criterion):
-    # switch to evaluation mode
+    # switch to evaluation model
     model.eval()
     sal_eval_val = IoUEval()
     epoch_loss = []
@@ -109,7 +104,6 @@ def val(args, val_loader, model, criterion):
 
     return average_epoch_loss_val, IoU, MAE
 
-
 def train(args, train_loader, model, criterion, optimizer, epoch, max_batches, cur_iter=0):
     # switch to train mode
     model.eval()
@@ -140,17 +134,19 @@ def train(args, train_loader, model, criterion, optimizer, epoch, max_batches, c
         # compute the confusion matrix
         if args.gpu and torch.cuda.device_count() > 1:
            output = gather(output, 0, dim=0)
+
         with torch.no_grad():
             sal_eval_train.add_batch(output[:, 0, :, :] , target_var)
+
         if iter % 20 == 0 or iter == len(train_loader) - 1:
             print('[%d/%d] iteration: [%d/%d] lr: %.7f loss: %.3f time:%.3f' % (iter, \
                     total_batches, iter+cur_iter, max_batches*args.max_epochs, lr, \
                     loss.data.item(), time_taken))
+
     average_epoch_loss_train = sum(epoch_loss) / len(epoch_loss)
     IoU, MAE = sal_eval_train.get_metric()
 
     return average_epoch_loss_train, IoU, MAE, lr
-
 
 def adjust_learning_rate(args, optimizer, epoch, iter, max_batches):
     if args.lr_mode == 'step':
@@ -160,12 +156,14 @@ def adjust_learning_rate(args, optimizer, epoch, iter, max_batches):
         lr = args.lr * (1 - iter * 1.0 / max_iter) ** 0.9
     else:
         raise ValueError('Unknown lr mode {}'.format(args.lr_mode))
+
     if epoch == 0 and iter < 200: # warm up
         lr = args.lr * 0.9 * (iter + 1) / 200 + 0.1 * args.lr
+
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-    return lr
 
+    return lr
 
 def train_validate_covid(args):
     # load the model
@@ -175,12 +173,15 @@ def train_validate_covid(args):
     # create the directory if not exist
     if not os.path.exists(args.savedir):
         os.makedirs(args.savedir)
+
+    #파일 복사
     if True:
         print('copying train.py, train.sh, EDN_train.py to snapshots dir')
-        shutil.copy('tools/train_single.py', args.savedir + 'train.py')
-        shutil.copy('tools/train.sh', args.savedir + 'train.sh')
+        shutil.copy('train.py', args.savedir + 'train.py')
+        shutil.copy('train.sh', args.savedir + 'train.sh')
         shutil.copy('Models/single_model.py', args.savedir + 'single_model.py')
         shutil.copy('Models/utils.py', args.savedir + 'utils.py')
+
     if args.gpu and torch.cuda.device_count() > 1:
         #model = nn.DataParallel(model)
         model = DataParallelModel(model)
@@ -239,6 +240,7 @@ def train_validate_covid(args):
 
     max_batches = len(trainLoader_main) #+ len(trainLoader_scale1) + len(trainLoader_scale2)
     print('max_batches {}'.format(max_batches))
+
     if args.gpu:
         cudnn.benchmark = True
 
@@ -310,6 +312,7 @@ def train_validate_covid(args):
                 % (epoch, loss_tr, loss_val, IoU_tr, IoU_val))
         torch.cuda.empty_cache()
     logger.close()
+
 
 if __name__ == '__main__':
     parser = ArgumentParser()

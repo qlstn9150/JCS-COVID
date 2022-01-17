@@ -20,6 +20,7 @@ class FCN(nn.Module):
 
         return torch.sigmoid(saliency_maps)
 
+
 class FuseNet(nn.Module):
     def __init__(self, c1=[1,2,3,4,5], c2=[1,2,3,4,5], out_channels=[1,2,3,4,5]):
         super(FuseNet, self).__init__()
@@ -45,7 +46,6 @@ class FuseNet(nn.Module):
         return x_new[0], x_new[1], x_new[2], x_new[3], x_new[4]
 
 
-
 class JCS(nn.Module):
     def __init__(self, pretrained=None, use_carafe=True,
                  enc_channels=[64, 128, 256, 512, 512, 512],
@@ -66,6 +66,7 @@ class JCS(nn.Module):
         self.pool = nn.MaxPool2d(2,2,0)
 
     def forward(self, input, res2net_features=None):
+
         conv1, conv2, conv3, conv4, conv5 = self.vgg16(input)
         if res2net_features is not None:
             conv1r, conv2r, conv3r, conv4r, conv5r = self.res2net(res2net_features)
@@ -104,7 +105,6 @@ class SEBlock(nn.Module):
         fc2 = torch.sigmoid(self.linear2(fc1))
         return x * fc2.view(N, C, 1, 1)
     
-
 
 class GPD(nn.Module):
     def __init__(self, in_channels, expansion=4, dilation=[1, 3, 6, 9]):

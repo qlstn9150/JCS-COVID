@@ -1,8 +1,6 @@
 import numpy as np
-import torch
-import random
-import cv2
-import torch.nn.functional as F
+import cv2, torch, random
+#import torch.nn.functional as F
 
 
 class Scale(object):

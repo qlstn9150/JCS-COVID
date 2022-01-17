@@ -1,140 +1,18 @@
-import torch
+import os, cv2, sys, torch, argparse
+import numpy as np
+from PIL import Image
+
 from torch.autograd import Variable
 from torch.autograd import Function
-from torchvision import models
-from torchvision import utils
-import cv2
-import sys
-import numpy as np
-import argparse
-import os
-import torchvision.transforms as transforms
-from PIL import Image
-from Models.res2net import res2net101_v1b_26w_4s
 import torch.utils.data as data
-class FeatureExtractor():
-    """ Class for extracting activations and 
-    registering gradients from targetted intermediate layers """
-    def __init__(self, model, target_layers):
-        self.model = model
-        self.target_layers = target_layers
-        self.gradients = []
+#from torchvision import models
+#from torchvision import utils
+import torchvision.transforms as transforms
 
-    def save_gradient(self, grad):
-        self.gradients.append(grad)
+from Models.res2net import res2net101_v1b_26w_4s
 
-    def __call__(self, x):
-        outputs = []
-        self.gradients = []
-        for name, module in self.model._modules.items():
-            x = module(x)
-            # print(name,x.shape)
-            if name == 'avgpool':
-                break
-            if name in self.target_layers:
-                x.register_hook(self.save_gradient)
-                outputs += [x]
-        return outputs, x
 
-class ModelOutputs():
-    """ Class for making a forward pass, and getting:
-    1. The network output.
-    2. Activations from intermeddiate targetted layers.
-    3. Gradients from intermeddiate targetted layers. """
-    def __init__(self, model, target_layers):
-        self.model = model
-        self.feature_extractor = FeatureExtractor(self.model, target_layers)
-
-    def get_gradients(self):
-        return self.feature_extractor.gradients
-
-    def __call__(self, x):
-        target_activations, output  = self.feature_extractor(x)
-        output = output.view(output.size(0), -1)
-        output = self.model.fc(output)
-        return target_activations, output
-
-def preprocess_image(img):
-    
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
-    val_trans = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ]) # 为了训练一致所以先resize再裁剪。如果不想裁剪需要重新训练不裁剪版本的model
-    preprocessed_img = val_trans(img)
-    preprocessed_img.unsqueeze_(0)
-    # print("preprocessed_img", preprocessed_img.shape)
-    crop_trans =  transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-        ])
-    crop_img = crop_trans(img)
-    input = Variable(preprocessed_img, requires_grad = True)
-    return crop_img, input
-
-def show_cam_on_image(img, mask, save_path):
-    heatmap = cv2.applyColorMap(np.uint8(256*mask), cv2.COLORMAP_JET)
-    heatmap = np.float32(heatmap)
-    cam = heatmap + np.float32(img)
-    cam = cam / np.max(cam)
-    cv2.imwrite(save_path, np.uint8(255 * cam))
-
-class GradCam:
-    def __init__(self, model, target_layer_names, use_cuda):
-        self.model = model
-        self.model.eval()
-        self.cuda = use_cuda
-        if self.cuda:
-            self.model = model.cuda()
-
-        self.extractor = ModelOutputs(self.model, target_layer_names)
-
-    def forward(self, input):
-        return self.model(input) 
-
-    def __call__(self, input, index = None):
-        if self.cuda:
-            features, output = self.extractor(input.cuda())
-        else:
-            features, output = self.extractor(input)
-        print("output",output.cpu().data.numpy())
-        if index == None:
-            index = np.argmax(output.cpu().data.numpy())
-
-        one_hot = np.zeros((1, output.size()[-1]), dtype = np.float32)
-        one_hot[0][index] = 1
-        one_hot = Variable(torch.from_numpy(one_hot), requires_grad = True)
-        if self.cuda:
-            one_hot = torch.sum(one_hot.cuda() * output)
-        else:
-            one_hot = torch.sum(one_hot * output)
-
-        self.model.zero_grad()
-        self.model.fc.zero_grad()
-        one_hot.backward(retain_graph=True)
-
-        grads_val = self.extractor.get_gradients()[-1].cpu().data.numpy()
-
-        target = features[-1]
-        target = target.cpu().data.numpy()[0, :]
-
-        weights = np.mean(grads_val, axis = (2, 3))[0, :]
-        cam = np.zeros(target.shape[1 : ], dtype = np.float32)
-
-        for i, w in enumerate(weights):
-            cam += w * target[i, :, :]
-
-        cam = np.maximum(cam, 0)
-        cam = cv2.resize(cam, (224, 224))
-        cam = cam - np.min(cam)
-        cam = cam / np.max(cam)
-
-        return cam
-
+### one patient ###
 class GuidedBackpropReLU(Function):
     @staticmethod
     def forward(self, input):
@@ -195,8 +73,6 @@ class GuidedBackpropReLUModel:
 
         return output
 
-
-
 class OnePatientDataset(data.Dataset):
     def __init__(self, image_path, pos=True):
         self.imgs = os.listdir(image_path)
@@ -227,58 +103,6 @@ class OnePatientDataset(data.Dataset):
     def __len__(self):
         return len(self.imgs)
 
-
-
-def pil_loader(path):
-    # open path as file to avoid ResourceWarning (https://github.com/python-pillow/Pillow/issues/835)
-    with open(path, 'rb') as f:
-        img = Image.open(f)
-        return img.convert('RGB')
-
-def get_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--cuda', action='store_true', default=True,
-                        help='Use NVIDIA GPU acceleration')
-    parser.add_argument('--image-path', type=str, default='examples',
-                        help='Input image path')
-    parser.add_argument('--batch-size', type=int, default=32,
-                        help='batch-size')
-    parser.add_argument('--gpu', type=int, default=0,
-                        help='gpu id')
-    parser.add_argument('--resume', type=str, default="model_zoo/res2net_segloss.pth",
-                        help='pretrained model weight path')
-    args = parser.parse_args()
-    args.cuda = args.cuda and torch.cuda.is_available()
-    if args.cuda:
-        print("Using GPU for acceleration")
-    else:
-        print("Using CPU for computation")
-
-    return args
-
-def get_cam_for_one_patient(grad_cam, image_path, patient, saveto='cam_results'):
-    imgs = os.listdir(os.path.join(image_path,patient))
-    save_path = os.path.join(saveto, patient)
-    # save_path = save_path.split('/')
-    # if save_path[-1]=="":
-    #     save_path = save_path[-2]
-    # else:
-    #     save_path = save_path[-1]
-    print(save_path)
-    if not os.path.isdir(save_path):
-        os.makedirs(save_path)
-    for img_name in imgs:
-        img = pil_loader(os.path.join(image_path, patient, img_name))
-        crop_image, input = preprocess_image(img)
-
-        # If None, returns the map for the highest scoring category.
-        # Otherwise, targets the requested index.
-        target_index = 1
-
-        mask = grad_cam(input, target_index)
-
-        show_cam_on_image(crop_image, mask, os.path.join(save_path, img_name))
-
 def get_result_for_one_patient(model, image_path, pos=True):
     val_loader = torch.utils.data.DataLoader(
         OnePatientDataset(image_path, pos=pos),
@@ -307,6 +131,194 @@ def get_result_for_one_patient(model, image_path, pos=True):
         return 0
 
 
+
+### ModelOutputs 내 함수 ###
+class FeatureExtractor():
+    """ Class for extracting activations and
+    registering gradients from targetted intermediate layers """
+    def __init__(self, model, target_layers):
+        self.model = model
+        self.target_layers = target_layers
+        self.gradients = []
+
+    def save_gradient(self, grad):
+        self.gradients.append(grad)
+
+    def __call__(self, x):
+        outputs = []
+        self.gradients = []
+        for name, module in self.model._modules.items():
+            x = module(x)
+            # print(name,x.shape)
+            if name == 'avgpool':
+                break
+            if name in self.target_layers:
+                x.register_hook(self.save_gradient)
+                outputs += [x]
+        return outputs, x
+
+
+### GradCam 내 함수 ###
+class ModelOutputs():
+    """ Class for making a forward pass, and getting:
+    1. The network output.
+    2. Activations from intermeddiate targetted layers.
+    3. Gradients from intermeddiate targetted layers. """
+    def __init__(self, model, target_layers):
+        self.model = model
+        self.feature_extractor = FeatureExtractor(self.model, target_layers)
+
+    def get_gradients(self):
+        return self.feature_extractor.gradients
+
+    def __call__(self, x):
+        target_activations, output  = self.feature_extractor(x)
+        output = output.view(output.size(0), -1)
+        output = self.model.fc(output)
+        return target_activations, output
+
+
+### get_cam_for_one_patient 내 함수 ###
+
+def pil_loader(path):
+    # open path as file to avoid ResourceWarning (https://github.com/python-pillow/Pillow/issues/835)
+    with open(path, 'rb') as f:
+        img = Image.open(f)
+        return img.convert('RGB')
+
+def preprocess_image(img):
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
+    val_trans = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        normalize,
+    ])  # 为了训练一致所以先resize再裁剪。如果不想裁剪需要重新训练不裁剪版本的model
+    preprocessed_img = val_trans(img)
+    preprocessed_img.unsqueeze_(0)
+    # print("preprocessed_img", preprocessed_img.shape)
+    crop_trans = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+    ])
+    crop_img = crop_trans(img)
+    input = Variable(preprocessed_img, requires_grad=True)
+    return crop_img, input
+
+def show_cam_on_image(img, mask, save_path):
+    heatmap = cv2.applyColorMap(np.uint8(256*mask), cv2.COLORMAP_JET)
+    heatmap = np.float32(heatmap)
+    cam = heatmap + np.float32(img)
+    cam = cam / np.max(cam)
+    cv2.imwrite(save_path, np.uint8(255 * cam))
+
+
+### main 내 함수 ###
+
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--cuda', action='store_true', default=True,
+                        help='Use NVIDIA GPU acceleration')
+    parser.add_argument('--image-path', type=str, default='data/COVID-19-CT100/tr_im',
+                        help='Input image path')
+    parser.add_argument('--batch-size', type=int, default=32,
+                        help='batch-size')
+    parser.add_argument('--gpu', type=int, default=0,
+                        help='gpu id')
+    parser.add_argument('--resume', type=str, default="model_zoo/res2net_segloss.pth",
+                        help='pretrained model weight path')
+    args = parser.parse_args()
+    args.cuda = args.cuda and torch.cuda.is_available()
+    if args.cuda:
+        print("Using GPU for acceleration")
+    else:
+        print("Using CPU for computation")
+
+    return args
+
+class GradCam:
+    def __init__(self, model, target_layer_names, use_cuda):
+        self.model = model
+        self.model.eval()
+        self.cuda = use_cuda
+        if self.cuda:
+            self.model = model.cuda()
+
+        self.extractor = ModelOutputs(self.model, target_layer_names)
+
+    def forward(self, input):
+        return self.model(input)
+
+    def __call__(self, input, index = None):
+        if self.cuda:
+            features, output = self.extractor(input.cuda())
+        else:
+            features, output = self.extractor(input)
+        print("output",output.cpu().data.numpy())
+        if index == None:
+            index = np.argmax(output.cpu().data.numpy())
+
+        one_hot = np.zeros((1, output.size()[-1]), dtype = np.float32)
+        one_hot[0][index] = 1
+        one_hot = Variable(torch.from_numpy(one_hot), requires_grad = True)
+        if self.cuda:
+            one_hot = torch.sum(one_hot.cuda() * output)
+        else:
+            one_hot = torch.sum(one_hot * output)
+
+        self.model.zero_grad()
+        self.model.fc.zero_grad()
+        one_hot.backward(retain_graph=True)
+
+        grads_val = self.extractor.get_gradients()[-1].cpu().data.numpy()
+
+        target = features[-1]
+        target = target.cpu().data.numpy()[0, :]
+
+        weights = np.mean(grads_val, axis = (2, 3))[0, :]
+        cam = np.zeros(target.shape[1 : ], dtype = np.float32)
+
+        for i, w in enumerate(weights):
+            cam += w * target[i, :, :]
+
+        cam = np.maximum(cam, 0)
+        cam = cv2.resize(cam, (224, 224))
+        cam = cam - np.min(cam)
+        cam = cam / np.max(cam)
+
+        return cam
+
+def get_cam_for_one_patient(grad_cam, image_path, patient, saveto='cam_results'):
+    imgs = os.listdir(os.path.join(image_path,patient))
+    save_path = os.path.join(saveto, patient)
+    # save_path = save_path.split('/')
+    # if save_path[-1]=="":
+    #     save_path = save_path[-2]
+    # else:
+    #     save_path = save_path[-1]
+    print(save_path)
+    if not os.path.isdir(save_path):
+        os.makedirs(save_path)
+    for img_name in imgs:
+        img = pil_loader(os.path.join(image_path, patient, img_name))
+        crop_image, input = preprocess_image(img)
+
+        # If None, returns the map for the highest scoring category.
+        # Otherwise, targets the requested index.
+        target_index = 1
+
+        mask = grad_cam(input, target_index)
+
+        show_cam_on_image(crop_image, mask, os.path.join(save_path, img_name))
+
+
+
+
+
+
+
 if __name__ == '__main__':
     """ 
     Res2Net CAM FOR CT IMAGE.
@@ -328,8 +340,10 @@ if __name__ == '__main__':
                   .format(args.resume))
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
-    grad_cam = GradCam(model = model, \
-                    target_layer_names = ["layer4"], use_cuda=args.cuda)
-    
+
+    grad_cam = GradCam(model = model, target_layer_names = ["layer4"], use_cuda=args.cuda)
     get_cam_for_one_patient(grad_cam, image_path='', patient = args.image_path, saveto='results_pos')
+
+    #guid = GuidedBackpropReLUModel(model = model, use_cuda=args.cuda)
+    #get_result_for_one_patient(grad_cam, image_path=args.image_path, pos=True)
 
