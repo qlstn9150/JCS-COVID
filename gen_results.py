@@ -9,7 +9,7 @@ import torch.utils.data as data
 #from torchvision import utils
 import torchvision.transforms as transforms
 
-from Models.res2net import res2net101_v1b_26w_4s
+from Models.res2net import res2net50_v1b, res2net101_v1b, res2net152
 
 
 ### one patient ###
@@ -329,7 +329,7 @@ if __name__ == '__main__':
     # Can work with any model, but it assumes that the model has a 
     # feature method, and a classifier method,
     # as in the VGG models in torchvision.
-    model = res2net101_v1b_26w_4s(pretrained=False)
+    model = res2net152(pretrained=False)
     model.fc = torch.nn.Linear(2048, 2, bias=False)
     if args.resume:
         if os.path.isfile(args.resume):

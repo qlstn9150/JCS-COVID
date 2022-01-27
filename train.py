@@ -8,7 +8,8 @@ import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 import torch.optim.lr_scheduler
 
-from Models import single_model as net
+#from Models import single_model as net
+from Models import joint_model as net
 from tools.IoUEval import IoUEval
 from tools.Dataset import Dataset
 from tools.parallel import DataParallelModel, DataParallelCriterion
@@ -42,7 +43,7 @@ class CrossEntropyLoss(nn.Module):
             loss = BCEDiceLoss(inputs[:, 0, :, :], target)
             return loss
 
-class FLoss(nn.Module):
+'''class FLoss(nn.Module):
     def __init__(self, beta=0.3, log_like=False):
         super(FLoss, self).__init__()
         self.beta = beta
@@ -66,46 +67,27 @@ class FLoss(nn.Module):
         loss3 = self._compute_loss(inputs[:, 2, :, :], target)
         loss4 = self._compute_loss(inputs[:, 3, :, :], target)
         loss5 = self._compute_loss(inputs[:, 4, :, :], target)
-        return 1.0*loss1 + 1.0*loss2 + 1.0*loss3 + 1.0*loss4 + 1.0*loss5
+        return 1.0*loss1 + 1.0*loss2 + 1.0*loss3 + 1.0*loss4 + 1.0*loss5'''
 
-@torch.no_grad()
-def val(args, val_loader, model, criterion):
-    # switch to evaluation model
-    model.eval()
-    sal_eval_val = IoUEval()
-    epoch_loss = []
-    total_batches = len(val_loader)
-    for iter, (input, target) in enumerate(val_loader):
-        start_time = time.time()
 
-        if args.gpu:
-            input = input.cuda()
-            target = target.cuda()
-        input_var = torch.autograd.Variable(input)
-        target_var = torch.autograd.Variable(target).float()
+def adjust_learning_rate(args, optimizer, epoch, iter, max_batches):
+    if args.lr_mode == 'step':
+        lr = args.lr * (0.1 ** (epoch // args.step_loss))
+    elif args.lr_mode == 'poly':
+        max_iter = max_batches * args.max_epochs
+        lr = args.lr * (1 - iter * 1.0 / max_iter) ** 0.9
+    else:
+        raise ValueError('Unknown lr mode {}'.format(args.lr_mode))
 
-        # run the mdoel
-        output = model(input_var)
-        loss = criterion(output, target_var)
-        #torch.cuda.synchronize()
-        time_taken = time.time() - start_time
+    if epoch == 0 and iter < 200: # warm up
+        lr = args.lr * 0.9 * (iter + 1) / 200 + 0.1 * args.lr
 
-        epoch_loss.append(loss.data.item())
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
 
-        # compute the confusion matrix
-        if args.gpu and torch.cuda.device_count() > 1:
-            output = gather(output, 0, dim=0)
-        sal_eval_val.add_batch(output[:, 0, :, :],  target_var)
-        if iter % 50 == 0 or iter == len(val_loader) - 1:
-            print('[%d/%d] loss: %.3f time: %.3f' % (iter, total_batches, loss.data.item(), time_taken))
-
-    average_epoch_loss_val = sum(epoch_loss) / len(epoch_loss)
-    IoU, MAE = sal_eval_val.get_metric()
-
-    return average_epoch_loss_val, IoU, MAE
+    return lr
 
 def train(args, train_loader, model, criterion, optimizer, epoch, max_batches, cur_iter=0):
-    # switch to train mode
     model.eval()
     sal_eval_train = IoUEval()
     epoch_loss = []
@@ -148,26 +130,47 @@ def train(args, train_loader, model, criterion, optimizer, epoch, max_batches, c
 
     return average_epoch_loss_train, IoU, MAE, lr
 
-def adjust_learning_rate(args, optimizer, epoch, iter, max_batches):
-    if args.lr_mode == 'step':
-        lr = args.lr * (0.1 ** (epoch // args.step_loss))
-    elif args.lr_mode == 'poly':
-        max_iter = max_batches * args.max_epochs
-        lr = args.lr * (1 - iter * 1.0 / max_iter) ** 0.9
-    else:
-        raise ValueError('Unknown lr mode {}'.format(args.lr_mode))
 
-    if epoch == 0 and iter < 200: # warm up
-        lr = args.lr * 0.9 * (iter + 1) / 200 + 0.1 * args.lr
+@torch.no_grad()
+def val(args, val_loader, model, criterion):
+    model.eval()
+    sal_eval_val = IoUEval()
+    epoch_loss = []
+    total_batches = len(val_loader)
+    for iter, (input, target) in enumerate(val_loader):
+        start_time = time.time()
 
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+        if args.gpu:
+            input = input.cuda()
+            target = target.cuda()
+        input_var = torch.autograd.Variable(input)
+        target_var = torch.autograd.Variable(target).float()
 
-    return lr
+        # run the mdoel
+        output = model(input_var)
+        loss = criterion(output, target_var)
+        #torch.cuda.synchronize()
+        time_taken = time.time() - start_time
+
+        epoch_loss.append(loss.data.item())
+
+        # compute the confusion matrix
+        if args.gpu and torch.cuda.device_count() > 1:
+            output = gather(output, 0, dim=0)
+        sal_eval_val.add_batch(output[:, 0, :, :],  target_var)
+        if iter % 50 == 0 or iter == len(val_loader) - 1:
+            print('[%d/%d] loss: %.3f time: %.3f' % (iter, total_batches, loss.data.item(), time_taken))
+
+    average_epoch_loss_val = sum(epoch_loss) / len(epoch_loss)
+    IoU, MAE = sal_eval_val.get_metric()
+
+    return average_epoch_loss_val, IoU, MAE
+
 
 def train_validate_covid(args):
     # load the model
-    model = net.JCS(pretrained='model_zoo/5stages_vgg16_bn-6c64b313.pth')
+    #model = net.JCS(pretrained='model_zoo/5stages_vgg16_bn-6c64b313.pth')
+    model = net.JCS(pretrained='model_zoo/jx_vit_base_p16_224-80ecf9dd.pth')
 
     args.savedir = args.savedir + '/'
     # create the directory if not exist
@@ -175,12 +178,12 @@ def train_validate_covid(args):
         os.makedirs(args.savedir)
 
     #파일 복사
-    if True:
+    '''if True:
         print('copying train.py, train.sh, EDN_train.py to snapshots dir')
         shutil.copy('train.py', args.savedir + 'train.py')
         shutil.copy('train.sh', args.savedir + 'train.sh')
         shutil.copy('Models/single_model.py', args.savedir + 'single_model.py')
-        shutil.copy('Models/utils.py', args.savedir + 'utils.py')
+        shutil.copy('Models/utils.py', args.savedir + 'utils.py')'''
 
     if args.gpu and torch.cuda.device_count() > 1:
         #model = nn.DataParallel(model)
@@ -287,7 +290,7 @@ def train_validate_covid(args):
         loss_val, IoU_val, MAE_val = val(args, valLoader, model, criteria)
         torch.cuda.empty_cache()
 
-        torch.save({
+        '''torch.save({
             'epoch': epoch + 1,
             'arch': str(model),
             'state_dict': model.state_dict(),
@@ -297,22 +300,29 @@ def train_validate_covid(args):
             'iou_tr': IoU_tr,
             'iou_val': IoU_val,
             'lr': lr
-        }, args.savedir + 'checkpoint.pth.tar')
+        }, args.savedir + 'checkpoint.pth.tar')'''
 
-        # save the model also
+
+        '''# save the model also
         model_file_name = args.savedir + '/model_' + str(epoch + 1) + '.pth'
         if IoU_val > 0.7:
             print("found a good model > 0.7, start to save that!")
-            torch.save(model.state_dict(), model_file_name)
+            torch.save(model.state_dict(), model_file_name)'''
 
-        logger.write("\n%d\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.7f" % (epoch, loss_tr, IoU_tr, MAE_tr, IoU_val, MAE_val, lr))
+        logger.write("\n%d\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.4f\t\t%.7f" % (
+        epoch, loss_tr, IoU_tr, MAE_tr, IoU_val, MAE_val, lr))
         logger.flush()
         print("Epoch " + str(epoch) + ': Details')
         print("\nEpoch No. %d:\tTrain Loss = %.4f\tVal Loss = %.4f\t IoU(tr) = %.4f\t IoU(val) = %.4f" \
-                % (epoch, loss_tr, loss_val, IoU_tr, IoU_val))
+              % (epoch, loss_tr, loss_val, IoU_tr, IoU_val))
         torch.cuda.empty_cache()
-    logger.close()
 
+    model_file_name = args.savedir + '/model_' + str(epoch + 1) + '.pth'
+    torch.save(model.state_dict(), model_file_name)
+    print("Save the final model")
+
+
+    logger.close()
 
 if __name__ == '__main__':
     parser = ArgumentParser()
@@ -327,9 +337,10 @@ if __name__ == '__main__':
     parser.add_argument('--lr_mode', default='step', help='Learning rate policy, step or poly')
     parser.add_argument('--savedir', default='./results', help='Directory to save the results')
     parser.add_argument('--resume', default=None, help='Use this checkpoint to continue training')
-    parser.add_argument('--log_file', default='trainValLog.txt', help='File that stores the training and validation logs')
+    parser.add_argument('--log_file', default='trainValLog.txt',
+                            help='File that stores the training and validation logs')
     parser.add_argument('--gpu', default=True, type=lambda x: (str(x).lower() == 'true'),
-                        help='Run on CPU or GPU. If TRUE, then GPU.')
+                            help='Run on CPU or GPU. If TRUE, then GPU.')
 
     args = parser.parse_args()
     print('Called with args:')

@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from Models.utils import ConvBNReLU
 from Models.vgg import vgg16
 from Models.resnet import resnet18, resnet50, resnet101
-from Models.res2net import res2net50_v1b, res2net101_v1b
+from Models.res2net import res2net50, res2net101, res2net152
 
 class FCN(nn.Module):
     def __init__(self, pretrained=None):
@@ -52,7 +52,8 @@ class JCS(nn.Module):
                  dec_channels=[64, 128, 256, 512, 512, 512], input_features=False):
         super(JCS, self).__init__()
         self.vgg16 = vgg16(pretrained, input_features=input_features)
-        self.res2net = res2net101_v1b("ok", input_features=input_features)
+        #self.res2net = res2net152_v1b_26w_4s("ok", input_features=input_features)
+        self.res2net = res2net101(False, input_features=input_features)
         self.fuse = FuseNet(c1=[64, 128, 256, 512, 512], c2=[64, 256, 512, 1024, 2048], out_channels=enc_channels[:-1])
         self.gap = nn.AdaptiveAvgPool2d((1, 1))
         self.gpd = GPD(enc_channels[-1], expansion=4)
